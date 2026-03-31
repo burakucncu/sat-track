@@ -1,0 +1,7 @@
+python-telegram-bot>=20.0
+skyfield>=1.45
+sgp4>=2.23
+APScheduler>=3.10
+python-dotenv>=1.0
+requests>=2.31
+pytz
