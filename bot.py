@@ -1,6 +1,4 @@
 import os
-from dotenv import load_dotenv
-load_dotenv()
 import logging
 import requests
 from datetime import datetime, timedelta
@@ -9,6 +7,9 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from skyfield.api import Topos, load, EarthSatellite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+# O an botu kullananları aklında tutması için geçici bir küme
+active_chats = set()
 
 # Loglama ayarları
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -19,7 +20,7 @@ TURKEY_TZ = pytz.timezone('Europe/Istanbul')
 
 # Bellek (Veritabanı niyetine)
 user_data = {}
-# Format: { chat_id: { 'gs': {'lat': 39.89110, 'lon': 32.77870, 'alt': 925, 'name': 'Tübitak Uzay Ankara'}, 'sat_id': '25544', 'remind_time': 10, 'tle': (line1, line2, name) } }
+# Format: { chat_id: { 'gs': {'lat': 39.89110, 'lon': 32.77870, 'alt': 925, 'name': 'Tübitak Uzay Ankara'}, 'sat_id': '25544', 'remind_time': 10, 'min_elevation': 0, 'tle': (line1, line2, name) } }
 
 # Skyfield Zaman Ölçeği
 ts = load.timescale()
@@ -29,7 +30,6 @@ ts = load.timescale()
 def get_tle_from_celestrak(norad_id):
     """CelesTrak'tan güncel TLE verisini sağlam bir şekilde çeker"""
     url = f'https://celestrak.org/NORAD/elements/gp.php?CATNR={norad_id}&FORMAT=tle'
-    # CelesTrak bizi engellemesin diye kendimizi gerçek bir tarayıcı gibi tanıtıyoruz
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
@@ -50,7 +50,7 @@ def get_tle_from_celestrak(norad_id):
     return None, None, None
 
 def calculate_passes(chat_id):
-    """Skyfield ile geçişleri (AOS, TCA, LOS) hesaplar"""
+    """Skyfield ile geçişleri hesaplar ve SADECE filtreyi geçenleri döndürür"""
     data = user_data.get(chat_id)
     if not data or 'tle' not in data:
         return []
@@ -60,6 +60,9 @@ def calculate_passes(chat_id):
     
     gs = data['gs']
     station = Topos(latitude_degrees=gs['lat'], longitude_degrees=gs['lon'], elevation_m=gs['alt'])
+    
+    # Kullanıcının belirlediği minimum irtifa filtresi (Varsayılan: 0)
+    min_el_threshold = data.get('min_elevation', 0)
 
     # Şu andan itibaren 7 günlük hesaplama
     t0 = ts.now()
@@ -88,7 +91,11 @@ def calculate_passes(chat_id):
             
         elif event == 2 and 'aos' in current_pass: # LOS (Ufuk çizgisinin altına indi)
             current_pass['los'] = event_time
-            passes.append(current_pass)
+            
+            # FİLTRELEME: Eğer bu geçişin en yüksek noktası kullanıcının istediği dereceden büyükse listeye ekle
+            if current_pass.get('max_el', 0) >= min_el_threshold:
+                passes.append(current_pass)
+                
             current_pass = {}
             
     return passes
@@ -107,7 +114,10 @@ async def schedule_pass_alerts(chat_id, context: ContextTypes.DEFAULT_TYPE):
             job.remove()
 
     passes = calculate_passes(chat_id)
+    
     if not passes:
+        # Eğer filtre yüzünden hiç geçiş kalmadıysa kullanıcıya bilgi ver
+        await context.bot.send_message(chat_id=chat_id, text=f"⚠️ No passes found above your {data.get('min_elevation', 0)}° elevation filter for the next 7 days.")
         return
 
     sat_name = data['tle'][2]
@@ -213,24 +223,26 @@ async def auto_daily_tle_update(context: ContextTypes.DEFAULT_TYPE):
 # --- TELEGRAM KOMUTLARI ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
-    # Varsayılan değerlerle kullanıcıyı kaydet
+    chat_id = update.effective_chat.id
+    active_chats.add(chat_id)
     user_data[chat_id] = {
         'gs': {'lat': 39.89110, 'lon': 32.77870, 'alt': 925, 'name': 'Tübitak Uzay Ankara'},
-        'remind_time': 10
+        'remind_time': 10,
+        'min_elevation': 0 # Varsayılan olarak tüm geçişleri gösterir
     }
     await update.message.reply_text("🛰️ Welcome to Satellite Tracker Bot!\n\nDefault Station: Tübitak Uzay Ankara\nUse /satellite <NORAD_ID> to start tracking.")
 
 async def set_groundstation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
+    active_chats.add(chat_id)
     args = context.args
 
     if chat_id not in user_data:
-        user_data[chat_id] = {'remind_time': 10}
+        user_data[chat_id] = {'remind_time': 10, 'min_elevation': 0}
 
     if not args or args[0].lower() == 'default':
         user_data[chat_id]['gs'] = {'lat': 39.89110, 'lon': 32.77870, 'alt': 925, 'name': 'Tübitak Uzay Ankara'}
-        await update.message.reply_text("📍 Station reset to: <b>Tübitak Uzay Ankara</b> (39.891, 32.778)", parse_mode='HTML')
+        await update.message.reply_text("📍 Station reset to: <b>Tübitak Uzay Ankara</b>", parse_mode='HTML')
     elif len(args) >= 3:
         try:
             lat = float(args[0])
@@ -241,15 +253,15 @@ async def set_groundstation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("⚠️ Error: Coordinates must be numbers. Example: /groundstation 39.89 32.77 925")
     else:
-        await update.message.reply_text("⚠️ Usage:\n/groundstation default\n/groundstation <lat> <lon> <alt>\nExample: /groundstation 39.891 32.778 925")
+        await update.message.reply_text("⚠️ Usage:\n/groundstation default\n/groundstation <lat> <lon> <alt>")
         return
 
-    # İstasyon değiştiği için alarmları yeniden kur
     if 'tle' in user_data[chat_id]:
         await schedule_pass_alerts(chat_id, context)
 
 async def set_satellite(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
+    active_chats.add(chat_id)
     args = context.args
 
     if not args:
@@ -262,18 +274,19 @@ async def set_satellite(update: Update, context: ContextTypes.DEFAULT_TYPE):
     line1, line2, name = get_tle_from_celestrak(sat_id)
     if line1:
         if chat_id not in user_data:
-            user_data[chat_id] = {'gs': {'lat': 39.89110, 'lon': 32.77870, 'alt': 925, 'name': 'Tübitak Uzay Ankara'}, 'remind_time': 10}
+            user_data[chat_id] = {'gs': {'lat': 39.89110, 'lon': 32.77870, 'alt': 925, 'name': 'Tübitak Uzay Ankara'}, 'remind_time': 10, 'min_elevation': 0}
         
         user_data[chat_id]['sat_id'] = sat_id
         user_data[chat_id]['tle'] = (line1, line2, name)
         
-        await update.message.reply_text(f"✅ Success! Target acquired: <b>{name}</b>\nCalculating passes and setting alarms...", parse_mode='HTML')
+        await update.message.reply_text(f"✅ Success! Target acquired: <b>{name}</b>\nCalculating passes...", parse_mode='HTML')
         await schedule_pass_alerts(chat_id, context)
     else:
-        await update.message.reply_text("❌ Error: Could not find TLE data for that NORAD ID. (Or connection timed out)")
+        await update.message.reply_text("❌ Error: Could not find TLE data for that NORAD ID.")
 
 async def set_remindtime(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
+    active_chats.add(chat_id)
     args = context.args
 
     if not args or not args[0].isdigit():
@@ -282,53 +295,92 @@ async def set_remindtime(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     mins = int(args[0])
     if chat_id not in user_data:
-        user_data[chat_id] = {'gs': {'lat': 39.89110, 'lon': 32.77870, 'alt': 925, 'name': 'Tübitak Uzay Ankara'}}
+        user_data[chat_id] = {'gs': {'lat': 39.89110, 'lon': 32.77870, 'alt': 925, 'name': 'Tübitak Uzay Ankara'}, 'min_elevation': 0}
     
     user_data[chat_id]['remind_time'] = mins
     await update.message.reply_text(f"✅ <b>Settings Updated!</b>\nAlerts: <b>{mins} min</b> before AOS.", parse_mode='HTML')
     
-    # Süre değiştiği için alarmları güncelle
+    if 'tle' in user_data[chat_id]:
+        await schedule_pass_alerts(chat_id, context)
+
+async def set_minelevation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Yeni Komut: Minimum Elevasyon Filtresi"""
+    chat_id = update.effective_chat.id
+    active_chats.add(chat_id)
+    args = context.args
+
+    if not args:
+        await update.message.reply_text("⚠️ Usage: /minelevation <degrees>\nExample: /minelevation 10\nThis sets the minimum maximum elevation required to receive an alert.")
+        return
+
+    try:
+        min_el = float(args[0])
+    except ValueError:
+        await update.message.reply_text("⚠️ Error: Please enter a valid number (e.g., 10 or 15.5).")
+        return
+
+    if chat_id not in user_data:
+        user_data[chat_id] = {'gs': {'lat': 39.89110, 'lon': 32.77870, 'alt': 925, 'name': 'Tübitak Uzay Ankara'}, 'remind_time': 10}
+    
+    user_data[chat_id]['min_elevation'] = min_el
+    await update.message.reply_text(f"✅ <b>Filter Updated!</b>\nI will now ONLY alert you for passes where the maximum elevation is <b>{min_el}° or higher.</b>", parse_mode='HTML')
+    
     if 'tle' in user_data[chat_id]:
         await schedule_pass_alerts(chat_id, context)
 
 async def update_tle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    chat_id = update.effective_chat.id
+    active_chats.add(chat_id)
     
     if chat_id not in user_data or 'sat_id' not in user_data[chat_id]:
-        await update.message.reply_text("⚠️ No satellite is currently being tracked. Use /satellite <NORAD_ID> first.")
+        await update.message.reply_text("⚠️ No satellite is currently being tracked.")
         return
 
-    await update.message.reply_text("📡 <b>Safe Update Initiated!</b>\nTesting connection to CelesTrak...", parse_mode='HTML')
+    await update.message.reply_text("📡 <b>Safe Update Initiated!</b>\nTesting connection...", parse_mode='HTML')
     
     sat_id = user_data[chat_id]['sat_id']
     line1, line2, name = get_tle_from_celestrak(sat_id)
     
     if line1:
         user_data[chat_id]['tle'] = (line1, line2, name)
-        await update.message.reply_text("✅ <b>Success!</b> New data verified.\nSystem is rebooting with fresh TLEs.", parse_mode='HTML')
+        await update.message.reply_text("✅ <b>Success!</b> New data verified.", parse_mode='HTML')
         await schedule_pass_alerts(chat_id, context)
     else:
-        await update.message.reply_text("❌ <b>Update Failed!</b>\nCould not reach CelesTrak. <b>Keeping old data</b> for stability.", parse_mode='HTML')
+        await update.message.reply_text("❌ <b>Update Failed!</b>", parse_mode='HTML')
 
 
 def main():
-    # Telegram Token'ını ortam değişkenlerinden al (Render'da .env'ye yazacağız)
     token = os.environ.get("TELEGRAM_TOKEN")
-    
     application = Application.builder().token(token).build()
+
+    # --- Kapanış Mesajı Özelliği ---
+    async def shutdown_notice(app: Application):
+        for chat_id in active_chats:
+            try:
+                # Kapanmadan hemen önce mesaj fırlatıyoruz
+                await app.bot.send_message(
+                    chat_id=chat_id, 
+                    text="🔄 <b>System Update in Progress</b>\nI am restarting for a version update. My memory will be cleared. Please re-send your satellite ID in 1 minute.",
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                logger.error(f"Kapanış mesajı gönderilemedi: {e}")
+
+    # Bu komut Render botu durdururken (SIGTERM geldiğinde) çalışır
+    application.post_stop = shutdown_notice
 
     # Komutları kaydet
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("groundstation", set_groundstation))
     application.add_handler(CommandHandler("satellite", set_satellite))
     application.add_handler(CommandHandler("remindtime", set_remindtime))
+    application.add_handler(CommandHandler("minelevation", set_minelevation))
     application.add_handler(CommandHandler("tleupdate", update_tle))
 
-    # Günlük otomatik TLE güncelleme servisini kur (Her gün gece 03:00'da çalışır)
+    # Günlük otomatik bakım
     job_queue = application.job_queue
     job_queue.run_daily(auto_daily_tle_update, time=datetime.strptime('03:00:00', '%H:%M:%S').time())
 
-    # Botu çalıştır
     application.run_polling()
 
 if __name__ == '__main__':
