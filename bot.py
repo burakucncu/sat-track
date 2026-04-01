@@ -371,14 +371,18 @@ async def cmd_constellation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         sat_ids = args
 
+    await update.message.reply_text(f"🚀 Initializing constellation tracking for {len(sat_ids)} satellites...")
+
     for sid in sat_ids:
         line1, line2, name = get_tle_from_celestrak(sid)
         if line1:
-            await update.message.reply_text(f"📡 Downloading orbital data for {name} ({sid})...")
             user_data[chat_id]['satellites'][sid] = {'tle': (line1, line2, name), 'custom_gs': None, 'custom_remind': None}
+            await update.message.reply_text(f"✅ Success! Target acquired: <b>{name}</b> ({sid})", parse_mode='HTML')
             await schedule_pass_alerts(chat_id, sid, context)
         else:
             await update.message.reply_text(f"❌ Error: Could not find TLE data for NORAD ID {sid}.")
+            
+    await update.message.reply_text("🌐 Constellation passes calculated and alerts are set!")
 
 async def cmd_listsatellites(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
