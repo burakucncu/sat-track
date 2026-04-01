@@ -1,25 +1,32 @@
-# 🛰️ Satellite Tracker Telegram Bot
+# 🛰️ Satellite Tracker & Constellation Bot
 
-A high-precision, 24/7 autonomous Telegram bot designed for satellite tracking and pass predictions. Built with Python and the **Skyfield/SGP4** propagation models, it provides real-time notifications for orbital events with scientific accuracy.
+A high-precision, 24/7 autonomous Telegram bot designed for tracking multiple satellites simultaneously. Built with Python and the **Skyfield/SGP4** propagation models, it acts as a personal fleet command center, providing real-time orbital event notifications with scientific accuracy.
 
 ## ✨ Key Features
 
-* **Scientific Accuracy:** Leverages the `skyfield` library to calculate exact Acquisition of Signal (AOS), Time of Closest Approach (TCA), and Loss of Signal (LOS) based on the latest TLE data.
-* **Default Target - Göktürk-2:** Pre-configured for **Göktürk-2 (NORAD ID: 39030)**, Turkey's high-resolution earth observation satellite.
+* **Multi-Satellite Fleet Tracking:** Monitor multiple satellites at the same time using the `/constellation` command without alarms overwriting each other.
+* **Scientific Accuracy:** Leverages the `skyfield` library to calculate exact Acquisition of Signal (AOS), Time of Closest Approach (TCA), and Loss of Signal (LOS).
+* **Target-Specific Configurations:** * Assign a **Custom Ground Station** to a specific satellite (e.g., track one satellite from Ankara and another from SvalSat).
+  * Set **Custom Warning Times** for individual satellites.
 * **Smart Elevation Filter:** Avoid "junk" passes. Use `/minelevation` to only receive alerts for high-quality passes above your chosen horizon threshold.
-* **Named Ground Stations:** Support for custom observer locations with labels (e.g., "Home", "Campus", "Tübitak Uzay").
-* **Update Awareness:** The bot intelligently remembers active users and sends a **"System Update"** notification before restarting, ensuring you know exactly when to re-sync your tracking.
-* **Auto-Maintenance:** Daily TLE refreshes at 03:00 AM Europe/Istanbul time to maintain sub-second precision.
+* **Update Awareness:** The bot intelligently remembers active users and sends a **"System Update"** notification before restarting, ensuring continuous tracking awareness.
+* **Auto-Maintenance:** Daily TLE refreshes at 03:00 AM to maintain sub-second precision and prevent orbital drift.
 
 ## 📱 Telegram Commands
 
-* `/start` - Initializes the session and sets the default station (Tübitak Uzay Ankara).
-* `/satellite <NORAD_ID>` - Targets a specific satellite (e.g., `/satellite 39030`).
-* `/groundstation <name> <lat> <lon> <alt>` - Sets a custom labeled location (e.g., `/groundstation My_Office 39.89 32.77 925`).
-* `/groundstation default` - Resets to the default Ankara station.
-* `/remindtime <minutes>` - Sets how early you want the first warning (Default: 10m).
+* `/start` - Initializes the session and sets the default station (TUBITAK UZAY ANKARA).
+* `/info` - Displays the complete list of available commands and usage examples.
+* `/satellite <NORAD_ID>` - Tracks a single satellite (clears others).
+* `/constellation <ID1> <ID2> ...` - Tracks multiple satellites at once. Use `/constellation default` for the default TUBITAK fleet (39030, 56178, 41875).
+* `/listsatellites` - Views all currently tracked satellites and their specific configurations.
+* `/groundstation <lat> <lon> <alt>` - Sets the global ground station for all satellites.
+* `/groundstation <NORAD_ID> <lat> <lon> <alt>` - Sets a custom ground station for a specific satellite.
+* `/remindtime <minutes>` - Sets the global early warning time.
+* `/remindtime <NORAD_ID> <minutes>` - Sets the warning time for a specific satellite.
 * `/minelevation <degrees>` - Filters out passes that don't reach a certain peak altitude.
 * `/tleupdate` - Manually forces a refresh of orbital elements from CelesTrak.
+* `/stop` - Stops all tracking and cancels all alarms.
+* `/stop <NORAD_ID>` - Stops tracking a specific satellite.
 
 ## 🚀 Local Installation
 
@@ -37,7 +44,7 @@ A high-precision, 24/7 autonomous Telegram bot designed for satellite tracking a
     ```
 
 3.  **Configure `.env`:**
-    Create a `.env` file and add your token:
+    Create a `.env` file and add your Telegram bot token:
     ```text
     TELEGRAM_TOKEN=your_api_key_here
     ```
@@ -54,7 +61,7 @@ A high-precision, 24/7 autonomous Telegram bot designed for satellite tracking a
 3.  **Build Command:** `pip install -r requirements.txt`
 4.  **Start Command:** `python bot.py`
 5.  **Environment Variables:** Add `TELEGRAM_TOKEN` with your bot's token.
-6.  **Deploy:** The bot will run 24/7 and survive restarts with its notification system.
+6.  **Deploy:** The bot will run 24/7 and survive restarts with its automated notification system.
 
 ---
-*Developed for Geomatics Engineering applications and satellite observation automation.*
+*Developed for orbital mechanics tracking and satellite constellation automation.*
