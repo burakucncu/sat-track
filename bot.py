@@ -43,7 +43,6 @@ def get_tle_from_celestrak(norad_id):
                 name = lines[0].strip()
                 line1 = lines[1].strip()
                 line2 = lines[2].strip()
-                # DOĞRU SIRALAMA: line1, line2, name
                 return line1, line2, name
     except Exception as e:
         logger.warning(f"CelesTrak Engeli ({norad_id}): {e}. Alternatif B Planına geçiliyor...")
@@ -57,7 +56,6 @@ def get_tle_from_celestrak(norad_id):
         
         if 'line1' in data and 'line2' in data:
             name = data.get('name', f"SAT-{norad_id}")
-            # DOĞRU SIRALAMA: line1, line2, name
             return data['line1'], data['line2'], name
     except Exception as e:
         logger.error(f"Alternatif API de başarısız oldu ({norad_id}): {e}")
@@ -81,9 +79,9 @@ def calculate_passes(chat_id, sat_id):
     # Kullanıcının belirlediği minimum irtifa filtresi (Varsayılan: 0)
     min_el_threshold = data.get('min_elevation', 0)
 
-    # Şu andan itibaren 7 günlük hesaplama
+    # Şu andan itibaren 1 günlük (24 saat) hesaplama
     t0 = ts.now()
-    t1 = ts.utc(t0.utc_datetime() + timedelta(days=7))
+    t1 = ts.utc(t0.utc_datetime() + timedelta(days=1))
     
     t, events = sat.find_events(station, t0, t1, altitude_degrees=0.0)
     
@@ -111,7 +109,7 @@ def calculate_passes(chat_id, sat_id):
     return passes
 
 async def send_pass_schedule(chat_id, sat_id, context: ContextTypes.DEFAULT_TYPE):
-    """Belirli bir uydu için 7 günlük geçiş programını mesaj olarak gönderir"""
+    """Belirli bir uydu için 24 saatlik geçiş programını mesaj olarak gönderir"""
     data = user_data.get(chat_id)
     if not data or sat_id not in data['satellites']:
         return
@@ -126,12 +124,12 @@ async def send_pass_schedule(chat_id, sat_id, context: ContextTypes.DEFAULT_TYPE
     if not passes:
         await context.bot.send_message(
             chat_id=chat_id, 
-            text=f"⚠️ No passes found above your {data.get('min_elevation', 0)}° elevation filter for <b>{sat_name}</b> ({sat_id}) from <b>{gs_name}</b> in the next 7 days.",
+            text=f"⚠️ No passes found above your {data.get('min_elevation', 0)}° elevation filter for <b>{sat_name}</b> ({sat_id}) from <b>{gs_name}</b> in the next 24 hours.",
             parse_mode='HTML'
         )
         return
 
-    msg = f"📅 <b>7-Day Pass Schedule for {sat_name} ({sat_id})</b>\n"
+    msg = f"📅 <b>24-Hour Pass Schedule for {sat_name} ({sat_id})</b>\n"
     msg += f"📍 Ground Station: {gs_name}\n\n"
 
     for i, p in enumerate(passes):
@@ -271,7 +269,7 @@ async def auto_daily_tle_update(context: ContextTypes.DEFAULT_TYPE):
                 user_data[chat_id]['satellites'][sat_id]['tle'] = (line1, line2, name)
                 await schedule_pass_alerts(chat_id, sat_id, context)
                 await send_pass_schedule(chat_id, sat_id, context)
-        await context.bot.send_message(chat_id=chat_id, text="🔄 <b>Daily Maintenance:</b> TLEs refreshed successfully. 7-day schedules updated.", parse_mode='HTML')
+        await context.bot.send_message(chat_id=chat_id, text="🔄 <b>Daily Maintenance:</b> TLEs refreshed successfully. 24-hour schedules updated.", parse_mode='HTML')
 
 def init_user(chat_id):
     if chat_id not in user_data:
