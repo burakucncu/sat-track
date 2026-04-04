@@ -27,24 +27,40 @@ ts = load.timescale()
 # --- YARDIMCI FONKSİYONLAR ---
 
 def get_tle_from_celestrak(norad_id):
-    """CelesTrak'tan güncel TLE verisini sağlam bir şekilde çeker"""
+    """Önce CelesTrak'ı dener, engellenirse alternatif API'ye geçer."""
+    # 1. PLAN A: CelesTrak (Ana Kaynak)
     url = f'https://celestrak.org/NORAD/elements/gp.php?CATNR={norad_id}&FORMAT=tle'
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
     
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-        
-        lines = response.text.strip().split('\n')
-        if len(lines) >= 3:
-            name = lines[0].strip()
-            line1 = lines[1].strip()
-            line2 = lines[2].strip()
-            return line1, line2, name
+        response = requests.get(url, headers=headers, timeout=10)
+        # Cloudflare engellerse genellikle HTML döndürür, text istiyoruz.
+        if response.status_code == 200 and not response.text.strip().startswith('<'):
+            lines = response.text.strip().split('\n')
+            if len(lines) >= 3:
+                name = lines[0].strip()
+                line1 = lines[1].strip()
+                line2 = lines[2].strip()
+                # DOĞRU SIRALAMA: line1, line2, name
+                return line1, line2, name
     except Exception as e:
-        logger.error(f"TLE Çekme Hatası: {e}")
+        logger.warning(f"CelesTrak Engeli ({norad_id}): {e}. Alternatif B Planına geçiliyor...")
+
+    # 2. PLAN B: Alternatif TLE API (Ivan Stanojevic)
+    alt_url = f'https://tle.ivanstanojevic.me/api/tle/{norad_id}'
+    try:
+        alt_response = requests.get(alt_url, timeout=10)
+        alt_response.raise_for_status() 
+        data = alt_response.json()
+        
+        if 'line1' in data and 'line2' in data:
+            name = data.get('name', f"SAT-{norad_id}")
+            # DOĞRU SIRALAMA: line1, line2, name
+            return data['line1'], data['line2'], name
+    except Exception as e:
+        logger.error(f"Alternatif API de başarısız oldu ({norad_id}): {e}")
         
     return None, None, None
 
