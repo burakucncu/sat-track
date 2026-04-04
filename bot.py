@@ -94,6 +94,51 @@ def calculate_passes(chat_id, sat_id):
             
     return passes
 
+async def send_pass_schedule(chat_id, sat_id, context: ContextTypes.DEFAULT_TYPE):
+    """Belirli bir uydu için 7 günlük geçiş programını mesaj olarak gönderir"""
+    data = user_data.get(chat_id)
+    if not data or sat_id not in data['satellites']:
+        return
+
+    passes = calculate_passes(chat_id, sat_id)
+    
+    sat_info = data['satellites'][sat_id]
+    sat_name = sat_info['tle'][2]
+    gs = sat_info.get('custom_gs') or data['global_gs']
+    gs_name = gs['name']
+
+    if not passes:
+        await context.bot.send_message(
+            chat_id=chat_id, 
+            text=f"⚠️ No passes found above your {data.get('min_elevation', 0)}° elevation filter for <b>{sat_name}</b> ({sat_id}) from <b>{gs_name}</b> in the next 7 days.",
+            parse_mode='HTML'
+        )
+        return
+
+    msg = f"📅 <b>7-Day Pass Schedule for {sat_name} ({sat_id})</b>\n"
+    msg += f"📍 Ground Station: {gs_name}\n\n"
+
+    for i, p in enumerate(passes):
+        aos = p['aos'].strftime('%d %b %H:%M:%S')
+        tca = p['tca'].strftime('%H:%M:%S')
+        los = p['los'].strftime('%H:%M:%S')
+        max_el = p['max_el']
+        
+        dur_m, dur_s = divmod((p['los'] - p['aos']).total_seconds(), 60)
+
+        msg += f"<b>Pass {i+1}:</b>\n"
+        msg += f"• 🟢 AOS: {aos}\n"
+        msg += f"• ⭐ TCA: {tca} (Max El: {max_el:.1f}°)\n"
+        msg += f"• 🔴 LOS: {los}\n"
+        msg += f"• ⏱️ Duration: {int(dur_m)}m {int(dur_s)}s\n\n"
+
+    # Mesaj çok uzunsa parça parça gönder
+    if len(msg) > 4000:
+        for x in range(0, len(msg), 4000):
+            await context.bot.send_message(chat_id=chat_id, text=msg[x:x+4000], parse_mode='HTML')
+    else:
+        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
+
 async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TYPE):
     """Geçişler için alarm (job) kurar"""
     data = user_data.get(chat_id)
@@ -115,8 +160,7 @@ async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TY
     gs_name = gs['name']
     
     if not passes:
-        await context.bot.send_message(chat_id=chat_id, text=f"⚠️ No passes found above your {data.get('min_elevation', 0)}° elevation filter for {sat_name} ({sat_id}) from {gs_name} in the next 7 days.")
-        return
+        return # Uyarıyı send_pass_schedule'da yapıyoruz
 
     # Uydunun özel remind süresi varsa onu kullan, yoksa global süreyi kullan
     remind_mins = sat_info.get('custom_remind') if sat_info.get('custom_remind') is not None else data['remind_time']
@@ -210,7 +254,8 @@ async def auto_daily_tle_update(context: ContextTypes.DEFAULT_TYPE):
             if line1:
                 user_data[chat_id]['satellites'][sat_id]['tle'] = (line1, line2, name)
                 await schedule_pass_alerts(chat_id, sat_id, context)
-        await context.bot.send_message(chat_id=chat_id, text="🔄 <b>Daily Maintenance:</b> TLEs refreshed successfully for all tracked satellites.", parse_mode='HTML')
+                await send_pass_schedule(chat_id, sat_id, context)
+        await context.bot.send_message(chat_id=chat_id, text="🔄 <b>Daily Maintenance:</b> TLEs refreshed successfully. 7-day schedules updated.", parse_mode='HTML')
 
 def init_user(chat_id):
     if chat_id not in user_data:
@@ -274,6 +319,7 @@ async def set_groundstation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for sat_id, sat_info in user_data[chat_id]['satellites'].items():
             if not sat_info.get('custom_gs'):
                 await schedule_pass_alerts(chat_id, sat_id, context)
+                await send_pass_schedule(chat_id, sat_id, context)
                 
     elif len(args) == 3:
         try:
@@ -283,6 +329,7 @@ async def set_groundstation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for sat_id, sat_info in user_data[chat_id]['satellites'].items():
                 if not sat_info.get('custom_gs'):
                     await schedule_pass_alerts(chat_id, sat_id, context)
+                    await send_pass_schedule(chat_id, sat_id, context)
         except ValueError:
             await update.message.reply_text("⚠️ Usage: /groundstation <lat> <lon> <alt>\nExample: /groundstation 39.89 32.77 925")
             
@@ -295,6 +342,7 @@ async def set_groundstation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_data[chat_id]['satellites'][sat_id]['custom_gs'] = {'lat': lat, 'lon': lon, 'alt': alt, 'name': f'Custom GS for {sat_id}'}
                 await update.message.reply_text(f"📍 Specific Station for {sat_id} updated to: <b>({lat}, {lon} | Alt: {alt}m)</b>", parse_mode='HTML')
                 await schedule_pass_alerts(chat_id, sat_id, context)
+                await send_pass_schedule(chat_id, sat_id, context)
             else:
                 await update.message.reply_text(f"❌ Error: Satellite {sat_id} is not currently being tracked. Track it first.")
         except ValueError:
@@ -324,6 +372,7 @@ async def set_satellite(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_data[chat_id]['satellites'][sat_id] = {'tle': (line1, line2, name), 'custom_gs': None, 'custom_remind': None}
             await update.message.reply_text(f"✅ Success! Target acquired: <b>{name}</b> ({sat_id})", parse_mode='HTML')
             await schedule_pass_alerts(chat_id, sat_id, context)
+            await send_pass_schedule(chat_id, sat_id, context)
         else:
             await update.message.reply_text(f"❌ Error: Could not find TLE data for NORAD ID {sat_id}.")
             
@@ -349,6 +398,7 @@ async def cmd_constellation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_data[chat_id]['satellites'][sid] = {'tle': (line1, line2, name), 'custom_gs': None, 'custom_remind': None}
             await update.message.reply_text(f"✅ Success! Target acquired: <b>{name}</b> ({sid})", parse_mode='HTML')
             await schedule_pass_alerts(chat_id, sid, context)
+            await send_pass_schedule(chat_id, sid, context)
         else:
             await update.message.reply_text(f"❌ Error: Could not find TLE data for NORAD ID {sid}.")
             
@@ -459,6 +509,7 @@ async def set_minelevation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     for sat_id in user_data[chat_id]['satellites'].keys():
         await schedule_pass_alerts(chat_id, sat_id, context)
+        await send_pass_schedule(chat_id, sat_id, context)
 
 async def update_tle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -476,6 +527,7 @@ async def update_tle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if line1:
             user_data[chat_id]['satellites'][sat_id]['tle'] = (line1, line2, name)
             await schedule_pass_alerts(chat_id, sat_id, context)
+            await send_pass_schedule(chat_id, sat_id, context)
             
     await update.message.reply_text("✅ <b>Success!</b> All data verified and updated.", parse_mode='HTML')
 
