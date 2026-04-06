@@ -28,7 +28,6 @@ ts = load.timescale()
 
 def get_tle_from_celestrak(norad_id):
     """Önce CelesTrak'ı dener, engellenirse alternatif API'ye geçer."""
-    # 1. PLAN A: CelesTrak (Ana Kaynak)
     url = f'https://celestrak.org/NORAD/elements/gp.php?CATNR={norad_id}&FORMAT=tle'
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -36,7 +35,6 @@ def get_tle_from_celestrak(norad_id):
     
     try:
         response = requests.get(url, headers=headers, timeout=10)
-        # Cloudflare engellerse genellikle HTML döndürür, text istiyoruz.
         if response.status_code == 200 and not response.text.strip().startswith('<'):
             lines = response.text.strip().split('\n')
             if len(lines) >= 3:
@@ -47,7 +45,6 @@ def get_tle_from_celestrak(norad_id):
     except Exception as e:
         logger.warning(f"CelesTrak Engeli ({norad_id}): {e}. Alternatif B Planına geçiliyor...")
 
-    # 2. PLAN B: Alternatif TLE API (Ivan Stanojevic)
     alt_url = f'https://tle.ivanstanojevic.me/api/tle/{norad_id}'
     try:
         alt_response = requests.get(alt_url, timeout=10)
@@ -63,7 +60,6 @@ def get_tle_from_celestrak(norad_id):
     return None, None, None
 
 def calculate_passes(chat_id, sat_id):
-    """Skyfield ile geçişleri hesaplar ve SADECE filtreyi geçenleri döndürür"""
     data = user_data.get(chat_id)
     if not data or sat_id not in data['satellites']:
         return []
@@ -72,14 +68,11 @@ def calculate_passes(chat_id, sat_id):
     line1, line2, sat_name = sat_info['tle']
     sat = EarthSatellite(line1, line2, sat_name, ts)
     
-    # Uydunun özel istasyonu varsa onu kullan, yoksa global istasyonu kullan
     gs = sat_info.get('custom_gs') or data['global_gs']
     station = Topos(latitude_degrees=gs['lat'], longitude_degrees=gs['lon'], elevation_m=gs['alt'])
     
-    # Kullanıcının belirlediği minimum irtifa filtresi (Varsayılan: 0)
     min_el_threshold = data.get('min_elevation', 0)
 
-    # Şu andan itibaren 1 günlük (24 saat) hesaplama
     t0 = ts.now()
     t1 = ts.utc(t0.utc_datetime() + timedelta(days=1))
     
@@ -109,7 +102,6 @@ def calculate_passes(chat_id, sat_id):
     return passes
 
 async def send_pass_schedule(chat_id, sat_id, context: ContextTypes.DEFAULT_TYPE):
-    """Belirli bir uydu için 24 saatlik geçiş programını mesaj olarak gönderir"""
     data = user_data.get(chat_id)
     if not data or sat_id not in data['satellites']:
         return
@@ -124,7 +116,7 @@ async def send_pass_schedule(chat_id, sat_id, context: ContextTypes.DEFAULT_TYPE
     if not passes:
         await context.bot.send_message(
             chat_id=chat_id, 
-            text=f"⚠️ No passes found above your {data.get('min_elevation', 0)}° elevation filter for <b>{sat_name}</b> ({sat_id}) from <b>{gs_name}</b> in the next 24 hours.",
+            text=f"⚠️ No passes found above your {data.get('min_elevation', 0)}° filter for <b>{sat_name}</b> ({sat_id}) from <b>{gs_name}</b> in the next 24 hours.",
             parse_mode='HTML'
         )
         return
@@ -146,7 +138,6 @@ async def send_pass_schedule(chat_id, sat_id, context: ContextTypes.DEFAULT_TYPE
         msg += f"• 🔴 LOS: {los}\n"
         msg += f"• ⏱️ Duration: {int(dur_m)}m {int(dur_s)}s\n\n"
 
-    # Mesaj çok uzunsa parça parça gönder
     if len(msg) > 4000:
         for x in range(0, len(msg), 4000):
             await context.bot.send_message(chat_id=chat_id, text=msg[x:x+4000], parse_mode='HTML')
@@ -154,14 +145,12 @@ async def send_pass_schedule(chat_id, sat_id, context: ContextTypes.DEFAULT_TYPE
         await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
 
 async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TYPE):
-    """Geçişler için alarm (job) kurar"""
     data = user_data.get(chat_id)
     if not data or sat_id not in data['satellites']:
         return
 
     scheduler = context.application.job_queue.scheduler
     
-    # Önce bu uydu ve kullanıcı için eski alarmları temizle
     for job in scheduler.get_jobs():
         if job.id.startswith(f"{chat_id}_{sat_id}_"):
             job.remove()
@@ -174,9 +163,8 @@ async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TY
     gs_name = gs['name']
     
     if not passes:
-        return # Uyarıyı send_pass_schedule'da yapıyoruz
+        return 
 
-    # Uydunun özel remind süresi varsa onu kullan, yoksa global süreyi kullan
     remind_mins = sat_info.get('custom_remind') if sat_info.get('custom_remind') is not None else data['remind_time']
     now = datetime.now(TURKEY_TZ)
 
@@ -199,7 +187,6 @@ async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TY
         tca_dur = tca - aos
         tca_m, tca_s = divmod(tca_dur.total_seconds(), 60)
 
-        # 1. Hatırlatma Alarmı 
         warning_time = aos - timedelta(minutes=remind_mins)
         if warning_time > now:
             msg = (
@@ -213,7 +200,6 @@ async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TY
             )
             scheduler.add_job(send_telegram_msg, 'date', run_date=warning_time, args=[chat_id, msg, context], id=f"{chat_id}_{sat_id}_warn_{aos.timestamp()}")
 
-        # 2. AOS Alarmı 
         if aos > now:
             msg = (
                 f"🟢 <b>AOS: {sat_name} is now in the footprint of {gs_name}!</b>\n\n"
@@ -225,7 +211,6 @@ async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TY
             )
             scheduler.add_job(send_telegram_msg, 'date', run_date=aos, args=[chat_id, msg, context], id=f"{chat_id}_{sat_id}_aos_{aos.timestamp()}")
 
-        # 3. TCA Alarmı 
         if tca > now:
             msg = (
                 f"⭐ <b>TCA: {sat_name} is currently at its highest point!</b>\n"
@@ -234,7 +219,6 @@ async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TY
             )
             scheduler.add_job(send_telegram_msg, 'date', run_date=tca, args=[chat_id, msg, context], id=f"{chat_id}_{sat_id}_tca_{aos.timestamp()}")
 
-        # 4. LOS Alarmı 
         if los > now:
             msg = f"🔴 <b>LOS: {sat_name} has completed its pass over {gs_name}.</b>\nSatellite is out of the footprint."
             
@@ -262,14 +246,35 @@ async def send_telegram_msg(chat_id, text, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Mesaj gonderilemedi {chat_id}: {e}")
 
 async def auto_daily_tle_update(context: ContextTypes.DEFAULT_TYPE):
+    """Her gün çalışan, hatalara karşı dirençli bakım servisi"""
     for chat_id, data in user_data.items():
+        if not data.get('satellites'):
+            continue 
+            
+        updated_sats = []
+        failed_sats = []
+        
         for sat_id in list(data['satellites'].keys()):
+            sat_name = data['satellites'][sat_id]['tle'][2]
             line1, line2, name = get_tle_from_celestrak(sat_id)
+            
             if line1:
                 user_data[chat_id]['satellites'][sat_id]['tle'] = (line1, line2, name)
-                await schedule_pass_alerts(chat_id, sat_id, context)
-                await send_pass_schedule(chat_id, sat_id, context)
-        await context.bot.send_message(chat_id=chat_id, text="🔄 <b>Daily Maintenance:</b> TLEs refreshed successfully. 24-hour schedules updated.", parse_mode='HTML')
+                updated_sats.append(name)
+            else:
+                failed_sats.append(sat_name)
+                
+            await schedule_pass_alerts(chat_id, sat_id, context)
+            await send_pass_schedule(chat_id, sat_id, context)
+            
+        report_msg = "🔄 <b>Daily Maintenance Report</b>\n"
+        if updated_sats:
+            report_msg += f"✅ Updated: {', '.join(updated_sats)}\n"
+        if failed_sats:
+            report_msg += f"⚠️ API Timeout (Using existing data): {', '.join(failed_sats)}\n"
+        report_msg += "\n📅 24-hour schedules calculated."
+        
+        await context.bot.send_message(chat_id=chat_id, text=report_msg, parse_mode='HTML')
 
 def init_user(chat_id):
     if chat_id not in user_data:
@@ -397,7 +402,6 @@ async def cmd_constellation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active_chats.add(chat_id)
     init_user(chat_id)
 
-    # Özel Türk Filosu Numaraları
     sat_ids = ['39030', '56178', '41875']
 
     await update.message.reply_text("🇹🇷 Initializing Turkish Constellation tracking (GÖKTÜRK-2, İMECE, GÖKTÜRK-1A)...")
@@ -526,6 +530,7 @@ async def set_minelevation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_pass_schedule(chat_id, sat_id, context)
 
 async def update_tle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manuel TLE güncelleme komutu, hatalara dirençli hale getirildi"""
     chat_id = update.effective_chat.id
     active_chats.add(chat_id)
     init_user(chat_id)
@@ -536,14 +541,29 @@ async def update_tle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("📡 <b>Safe Update Initiated!</b>\nRefreshing all tracked satellites...", parse_mode='HTML')
     
+    updated_sats = []
+    failed_sats = []
+    
     for sat_id in list(user_data[chat_id]['satellites'].keys()):
+        sat_name = user_data[chat_id]['satellites'][sat_id]['tle'][2]
         line1, line2, name = get_tle_from_celestrak(sat_id)
+        
         if line1:
             user_data[chat_id]['satellites'][sat_id]['tle'] = (line1, line2, name)
-            await schedule_pass_alerts(chat_id, sat_id, context)
-            await send_pass_schedule(chat_id, sat_id, context)
+            updated_sats.append(name)
+        else:
+            failed_sats.append(sat_name)
             
-    await update.message.reply_text("✅ <b>Success!</b> All data verified and updated.", parse_mode='HTML')
+        await schedule_pass_alerts(chat_id, sat_id, context)
+        await send_pass_schedule(chat_id, sat_id, context)
+            
+    report_msg = "<b>Update Complete!</b>\n"
+    if updated_sats:
+        report_msg += f"✅ Success: {', '.join(updated_sats)}\n"
+    if failed_sats:
+        report_msg += f"⚠️ Failed (Kept old data): {', '.join(failed_sats)}\n"
+        
+    await update.message.reply_text(report_msg, parse_mode='HTML')
 
 def main():
     token = os.environ.get("TELEGRAM_TOKEN")
