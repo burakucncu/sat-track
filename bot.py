@@ -59,7 +59,8 @@ def get_tle_from_celestrak(norad_id):
         
     return None, None, None
 
-def calculate_passes(chat_id, sat_id):
+def calculate_passes(chat_id, sat_id, days=2):
+    """Varsayılan olarak 48 saatlik (2 gün) hesaplama yapar, böylece bir sonraki günü görebiliriz."""
     data = user_data.get(chat_id)
     if not data or sat_id not in data['satellites']:
         return []
@@ -74,7 +75,7 @@ def calculate_passes(chat_id, sat_id):
     min_el_threshold = data.get('min_elevation', 0)
 
     t0 = ts.now()
-    t1 = ts.utc(t0.utc_datetime() + timedelta(days=1))
+    t1 = ts.utc(t0.utc_datetime() + timedelta(days=days))
     
     t, events = sat.find_events(station, t0, t1, altitude_degrees=0.0)
     
@@ -102,11 +103,12 @@ def calculate_passes(chat_id, sat_id):
     return passes
 
 async def send_pass_schedule(chat_id, sat_id, context: ContextTypes.DEFAULT_TYPE):
+    """Mesaj kalabalığı olmaması için LİSTEYİ sadece 24 saatlik hesaplar."""
     data = user_data.get(chat_id)
     if not data or sat_id not in data['satellites']:
         return
 
-    passes = calculate_passes(chat_id, sat_id)
+    passes = calculate_passes(chat_id, sat_id, days=1)
     
     sat_info = data['satellites'][sat_id]
     sat_name = sat_info['tle'][2]
@@ -145,6 +147,7 @@ async def send_pass_schedule(chat_id, sat_id, context: ContextTypes.DEFAULT_TYPE
         await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
 
 async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TYPE):
+    """Alarmları ve SONRAKİ GEÇİŞ tahminini yapabilmek için 48 saatlik hesaplar."""
     data = user_data.get(chat_id)
     if not data or sat_id not in data['satellites']:
         return
@@ -155,7 +158,7 @@ async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TY
         if job.id.startswith(f"{chat_id}_{sat_id}_"):
             job.remove()
 
-    passes = calculate_passes(chat_id, sat_id)
+    passes = calculate_passes(chat_id, sat_id, days=2)
     
     sat_info = data['satellites'][sat_id]
     sat_name = sat_info['tle'][2]
@@ -167,6 +170,9 @@ async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TY
 
     remind_mins = sat_info.get('custom_remind') if sat_info.get('custom_remind') is not None else data['remind_time']
     now = datetime.now(TURKEY_TZ)
+    
+    # Gelecek ilk gece yarısı (00:00) zamanını bul
+    next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
     for i, p in enumerate(passes):
         aos = p.get('aos')
@@ -187,18 +193,18 @@ async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TY
         tca_dur = tca - aos
         tca_m, tca_s = divmod(tca_dur.total_seconds(), 60)
 
-        warning_time = aos - timedelta(minutes=remind_mins)
-        if warning_time > now:
-            msg = (
-                f"🛰️ <b>INFO: {sat_name} is approaching {gs_name}!</b>\n"
-                f"AOS in just <b>{remind_mins} minutes</b>.\n\n"
-                f"📍 <b>Pass Summary:</b>\n"
-                f"• Station: <b>{gs_name}</b>\n"
-                f"• Max Elevation: <b>{max_el:.1f}°</b>\n"
-                f"• Max Elevation Time (TCA): <b>{tca_str}</b>\n"
-                f"• Total Visibility: {int(dur_m)}m {int(dur_s)}s"
-            )
-            scheduler.add_job(send_telegram_msg, 'date', run_date=warning_time, args=[chat_id, msg, context], id=f"{chat_id}_{sat_id}_warn_{aos.timestamp()}")
+        if warning_time := aos - timedelta(minutes=remind_mins):
+            if warning_time > now:
+                msg = (
+                    f"🛰️ <b>INFO: {sat_name} is approaching {gs_name}!</b>\n"
+                    f"AOS in just <b>{remind_mins} minutes</b>.\n\n"
+                    f"📍 <b>Pass Summary:</b>\n"
+                    f"• Station: <b>{gs_name}</b>\n"
+                    f"• Max Elevation: <b>{max_el:.1f}°</b>\n"
+                    f"• Max Elevation Time (TCA): <b>{tca_str}</b>\n"
+                    f"• Total Visibility: {int(dur_m)}m {int(dur_s)}s"
+                )
+                scheduler.add_job(send_telegram_msg, 'date', run_date=warning_time, args=[chat_id, msg, context], id=f"{chat_id}_{sat_id}_warn_{aos.timestamp()}")
 
         if aos > now:
             msg = (
@@ -234,8 +240,12 @@ async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TY
                     f"• TCA: <b>{np['tca'].strftime('%H:%M:%S')}</b> <i>({np['max_el']:.1f}°)</i>\n"
                     f"• Duration: <b>{int(n_m)}m {int(n_s)}s</b>"
                 )
+                
+                # Gece 00:00 (TLE Update) sonrasına denk geliyorsa uyarı ekle
+                if n_aos >= next_midnight:
+                    msg += f"\n\n<i>⚠️ Note: Estimated timings. This pass occurs after tonight's 00:00 TLE update and may slightly shift.</i>"
             else:
-                msg += f"\n\n📅 <b>NEXT PASS:</b> No more passes scheduled in the current window."
+                msg += f"\n\n📅 <b>NEXT PASS:</b> No more passes scheduled in the next 48 hours."
 
             scheduler.add_job(send_telegram_msg, 'date', run_date=los, args=[chat_id, msg, context], id=f"{chat_id}_{sat_id}_los_{aos.timestamp()}")
 
@@ -595,7 +605,10 @@ def main():
     application.add_handler(CommandHandler("tleupdate", update_tle))
 
     job_queue = application.job_queue
-    job_queue.run_daily(auto_daily_tle_update, time=datetime.strptime('06:00:00', '%H:%M:%S').time())
+    
+    # Zamanı Türkiye saatiyle tam 00:00 (gece yarısı) olarak ayarladık
+    midnight_trt = datetime.strptime('00:00:00', '%H:%M:%S').time().replace(tzinfo=TURKEY_TZ)
+    job_queue.run_daily(auto_daily_tle_update, time=midnight_trt)
 
     application.run_polling()
 
