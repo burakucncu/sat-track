@@ -27,13 +27,19 @@ ts = load.timescale()
 # --- YARDIMCI FONKSİYONLAR ---
 
 def get_tle_from_celestrak(norad_id):
-    """Önce CelesTrak'ı dener, engellenirse alternatif API'ye geçer."""
-    url = f'https://celestrak.org/NORAD/elements/gp.php?CATNR={norad_id}&FORMAT=tle'
+    """3 Kademeli Zırhlı TLE Çekme Fonksiyonu"""
+    
+    # Bütün API'leri kandırmak için gerçek bir insan (Chrome) kimliği
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Connection': 'keep-alive',
     }
     
+    # PLAN A: CelesTrak (Ana Kaynak)
     try:
+        url = f'https://celestrak.org/NORAD/elements/gp.php?CATNR={norad_id}&FORMAT=tle'
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200 and not response.text.strip().startswith('<'):
             lines = response.text.strip().split('\n')
@@ -42,21 +48,38 @@ def get_tle_from_celestrak(norad_id):
                 line1 = lines[1].strip()
                 line2 = lines[2].strip()
                 return line1, line2, name
-    except Exception as e:
-        logger.warning(f"CelesTrak Engeli ({norad_id}): {e}. Alternatif B Planına geçiliyor...")
+    except Exception:
+        pass # Çökerse sessizce Plan B'ye geç
 
-    alt_url = f'https://tle.ivanstanojevic.me/api/tle/{norad_id}'
+    # PLAN B: Ivan Stanojevic API
     try:
-        alt_response = requests.get(alt_url, timeout=10)
-        alt_response.raise_for_status() 
-        data = alt_response.json()
+        alt_url = f'https://tle.ivanstanojevic.me/api/tle/{norad_id}'
+        # Bot olduğunu gizle
+        alt_response = requests.get(alt_url, headers=headers, timeout=10)
+        if alt_response.status_code == 200:
+            data = alt_response.json()
+            if 'line1' in data and 'line2' in data:
+                name = data.get('name', f"SAT-{norad_id}")
+                return data['line1'], data['line2'], name
+    except Exception:
+        pass # Çökerse sessizce Plan C'ye geç
         
-        if 'line1' in data and 'line2' in data:
-            name = data.get('name', f"SAT-{norad_id}")
-            return data['line1'], data['line2'], name
+    # PLAN C: SatNOGS API (Dünya çapında radyo amatörlerinin veritabanı, çok sağlamdır)
+    try:
+        satnogs_url = f'https://db.satnogs.org/api/tle/?norad_cat_id={norad_id}'
+        sn_response = requests.get(satnogs_url, headers=headers, timeout=10)
+        if sn_response.status_code == 200:
+            sn_data = sn_response.json()
+            if sn_data and len(sn_data) > 0:
+                sat_data = sn_data[0]
+                if 'tle1' in sat_data and 'tle2' in sat_data:
+                    # SatNOGS formatı "0 GOKTURK-2" şeklindedir, baştaki sıfırı temizliyoruz
+                    name = sat_data.get('tle0', f"SAT-{norad_id}").replace('0 ', '').strip()
+                    return sat_data['tle1'], sat_data['tle2'], name
     except Exception as e:
-        logger.error(f"Alternatif API de başarısız oldu ({norad_id}): {e}")
-        
+        logger.error(f"Tüm API'ler başarısız oldu ({norad_id}): {e}")
+
+    # 3 Plan da çökerse (kıyamet senaryosu) eski veriyi kullanması için None döndür
     return None, None, None
 
 def calculate_passes(chat_id, sat_id, days=2):
