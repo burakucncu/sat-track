@@ -26,10 +26,11 @@ ts = load.timescale()
 
 # --- YARDIMCI FONKSİYONLAR ---
 
-def get_tle_from_celestrak(norad_id):
-    """3 Kademeli Zırhlı TLE Çekme Fonksiyonu"""
-    
-    # Bütün API'leri kandırmak için gerçek bir insan (Chrome) kimliği
+def get_tle_enhanced(norad_id):
+    """
+    3 Kademeli ve Raporlamalı TLE Çekme Sistemi.
+    Sırasıyla: CelesTrak -> Ivan API -> Space-Track
+    """
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -37,50 +38,52 @@ def get_tle_from_celestrak(norad_id):
         'Connection': 'keep-alive',
     }
     
-    # PLAN A: CelesTrak (Ana Kaynak)
+    # --- PLAN A: CelesTrak ---
     try:
         url = f'https://celestrak.org/NORAD/elements/gp.php?CATNR={norad_id}&FORMAT=tle'
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200 and not response.text.strip().startswith('<'):
-            lines = response.text.strip().split('\n')
+        resp = requests.get(url, headers=headers, timeout=8)
+        if resp.status_code == 200 and not resp.text.strip().startswith('<'):
+            lines = resp.text.strip().split('\n')
             if len(lines) >= 3:
-                name = lines[0].strip()
-                line1 = lines[1].strip()
-                line2 = lines[2].strip()
-                return line1, line2, name
-    except Exception:
-        pass # Çökerse sessizce Plan B'ye geç
+                return lines[1].strip(), lines[2].strip(), lines[0].strip(), "CelesTrak"
+    except Exception: 
+        pass
 
-    # PLAN B: Ivan Stanojevic API
+    # --- PLAN B: Ivan Stanojevic API ---
     try:
         alt_url = f'https://tle.ivanstanojevic.me/api/tle/{norad_id}'
-        # Bot olduğunu gizle
-        alt_response = requests.get(alt_url, headers=headers, timeout=10)
-        if alt_response.status_code == 200:
-            data = alt_response.json()
+        resp = requests.get(alt_url, headers=headers, timeout=8)
+        if resp.status_code == 200:
+            data = resp.json()
             if 'line1' in data and 'line2' in data:
-                name = data.get('name', f"SAT-{norad_id}")
-                return data['line1'], data['line2'], name
-    except Exception:
-        pass # Çökerse sessizce Plan C'ye geç
-        
-    # PLAN C: SatNOGS API (Dünya çapında radyo amatörlerinin veritabanı, çok sağlamdır)
-    try:
-        satnogs_url = f'https://db.satnogs.org/api/tle/?norad_cat_id={norad_id}'
-        sn_response = requests.get(satnogs_url, headers=headers, timeout=10)
-        if sn_response.status_code == 200:
-            sn_data = sn_response.json()
-            if sn_data and len(sn_data) > 0:
-                sat_data = sn_data[0]
-                if 'tle1' in sat_data and 'tle2' in sat_data:
-                    # SatNOGS formatı "0 GOKTURK-2" şeklindedir, baştaki sıfırı temizliyoruz
-                    name = sat_data.get('tle0', f"SAT-{norad_id}").replace('0 ', '').strip()
-                    return sat_data['tle1'], sat_data['tle2'], name
-    except Exception as e:
-        logger.error(f"Tüm API'ler başarısız oldu ({norad_id}): {e}")
+                return data['line1'], data['line2'], data.get('name', f"SAT-{norad_id}"), "Ivan API"
+    except Exception: 
+        pass
 
-    # 3 Plan da çökerse (kıyamet senaryosu) eski veriyi kullanması için None döndür
-    return None, None, None
+    # --- PLAN C: Space-Track (Giriş Yaparak Çeker) ---
+    st_user = os.environ.get("SPACE_TRACK_USER")
+    st_pass = os.environ.get("SPACE_TRACK_PASSWORD")
+    
+    if st_user and st_pass:
+        try:
+            session = requests.Session()
+            login_url = "https://www.space-track.org/ajaxauth/login"
+            login_data = {'identity': st_user, 'password': st_pass}
+            session.post(login_url, data=login_data, timeout=10)
+            
+            query_url = f"https://www.space-track.org/basicspacedata/query/class/gp/NORAD_CAT_ID/{norad_id}/format/tle/emptyresult/show"
+            resp = session.get(query_url, timeout=10)
+            
+            if resp.status_code == 200 and len(resp.text) > 20:
+                lines = resp.text.strip().split('\n')
+                if len(lines) >= 2:
+                    line1 = lines[0].strip()
+                    line2 = lines[1].strip()
+                    return line1, line2, f"SAT-{norad_id}", "Space-Track"
+        except Exception as e:
+            logger.error(f"Space-Track Hatası ({norad_id}): {e}")
+
+    return None, None, None, None
 
 def calculate_passes(chat_id, sat_id, days=2):
     """Varsayılan olarak 48 saatlik (2 gün) hesaplama yapar, böylece bir sonraki günü görebiliriz."""
@@ -288,24 +291,32 @@ async def auto_daily_tle_update(context: ContextTypes.DEFAULT_TYPE):
         failed_sats = []
         
         for sat_id in list(data['satellites'].keys()):
-            sat_name = data['satellites'][sat_id]['tle'][2]
-            line1, line2, name = get_tle_from_celestrak(sat_id)
+            old_name = data['satellites'][sat_id]['tle'][2]
+            line1, line2, name, source = get_tle_enhanced(sat_id)
             
             if line1:
+                # Tazelik bilgisini (Epoch) çıkaralım
+                sat_obj = EarthSatellite(line1, line2, name, ts)
+                epoch_dt = sat_obj.epoch.utc_datetime().replace(tzinfo=pytz.utc).astimezone(TURKEY_TZ)
+                epoch_str = epoch_dt.strftime('%d %b %H:%M')
+
                 user_data[chat_id]['satellites'][sat_id]['tle'] = (line1, line2, name)
-                updated_sats.append(name)
+                
+                # Rapor satırı oluştur
+                status_line = f"✅ {name}: Fetched from <b>{source}</b>\n   └ <i>Data Epoch: {epoch_str}</i>"
+                updated_sats.append(status_line)
             else:
-                failed_sats.append(sat_name)
+                failed_sats.append(f"⚠️ {old_name}: All sources failed. Using cached data.")
                 
             await schedule_pass_alerts(chat_id, sat_id, context)
             await send_pass_schedule(chat_id, sat_id, context)
             
-        report_msg = "🔄 <b>Daily Maintenance Report</b>\n"
+        report_msg = "🔄 <b>Daily Maintenance Report</b>\n\n"
         if updated_sats:
-            report_msg += f"✅ Updated: {', '.join(updated_sats)}\n"
+            report_msg += "\n".join(updated_sats) + "\n\n"
         if failed_sats:
-            report_msg += f"⚠️ API Timeout (Using existing data): {', '.join(failed_sats)}\n"
-        report_msg += "\n📅 24-hour schedules calculated."
+            report_msg += "\n".join(failed_sats) + "\n\n"
+        report_msg += "📅 24-hour schedules calculated."
         
         await context.bot.send_message(chat_id=chat_id, text=report_msg, parse_mode='HTML')
 
@@ -419,7 +430,7 @@ async def set_satellite(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"ℹ️ Satellite {sat_id} is already in your fleet.")
             continue
 
-        line1, line2, name = get_tle_from_celestrak(sat_id)
+        line1, line2, name, source = get_tle_enhanced(sat_id)
         if line1:
             user_data[chat_id]['satellites'][sat_id] = {'tle': (line1, line2, name), 'custom_gs': None, 'custom_remind': None}
             await update.message.reply_text(f"✅ Success! Target acquired: <b>{name}</b> ({sat_id})", parse_mode='HTML')
@@ -444,7 +455,7 @@ async def cmd_constellation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"ℹ️ Satellite {sid} is already in your fleet.")
             continue
 
-        line1, line2, name = get_tle_from_celestrak(sid)
+        line1, line2, name, source = get_tle_enhanced(sid)
         if line1:
             user_data[chat_id]['satellites'][sid] = {'tle': (line1, line2, name), 'custom_gs': None, 'custom_remind': None}
             await update.message.reply_text(f"✅ Success! Target acquired: <b>{name}</b> ({sid})", parse_mode='HTML')
@@ -578,23 +589,29 @@ async def update_tle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     failed_sats = []
     
     for sat_id in list(user_data[chat_id]['satellites'].keys()):
-        sat_name = user_data[chat_id]['satellites'][sat_id]['tle'][2]
-        line1, line2, name = get_tle_from_celestrak(sat_id)
+        old_name = user_data[chat_id]['satellites'][sat_id]['tle'][2]
+        line1, line2, name, source = get_tle_enhanced(sat_id)
         
         if line1:
+            sat_obj = EarthSatellite(line1, line2, name, ts)
+            epoch_dt = sat_obj.epoch.utc_datetime().replace(tzinfo=pytz.utc).astimezone(TURKEY_TZ)
+            epoch_str = epoch_dt.strftime('%d %b %H:%M')
+            
             user_data[chat_id]['satellites'][sat_id]['tle'] = (line1, line2, name)
-            updated_sats.append(name)
+            
+            status_line = f"✅ {name}: Fetched from <b>{source}</b>\n   └ <i>Data Epoch: {epoch_str}</i>"
+            updated_sats.append(status_line)
         else:
-            failed_sats.append(sat_name)
+            failed_sats.append(f"⚠️ {old_name}: All sources failed. Using cached data.")
             
         await schedule_pass_alerts(chat_id, sat_id, context)
         await send_pass_schedule(chat_id, sat_id, context)
             
-    report_msg = "<b>Update Complete!</b>\n"
+    report_msg = "<b>Update Complete!</b>\n\n"
     if updated_sats:
-        report_msg += f"✅ Success: {', '.join(updated_sats)}\n"
+        report_msg += "\n".join(updated_sats) + "\n\n"
     if failed_sats:
-        report_msg += f"⚠️ Failed (Kept old data): {', '.join(failed_sats)}\n"
+        report_msg += "\n".join(failed_sats) + "\n"
         
     await update.message.reply_text(report_msg, parse_mode='HTML')
 
