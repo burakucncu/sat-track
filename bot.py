@@ -1,12 +1,15 @@
 import os
 import logging
 import requests
+import threading
 from datetime import datetime, timedelta
 import pytz
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from skyfield.api import Topos, load, EarthSatellite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from flask import Flask, jsonify, request, send_file
+from flask_cors import CORS
 
 # O an botu kullananları aklında tutması için geçici bir küme
 active_chats = set()
@@ -24,13 +27,64 @@ user_data = {}
 # Skyfield Zaman Ölçeği
 ts = load.timescale()
 
+# ==========================================
+# --- WEB SUNUCUSU (API) KURULUMU ---
+# ==========================================
+app = Flask(__name__)
+CORS(app) # Tarayıcımızın bu API'den veri çekebilmesi için güvenlik izni (Cross-Origin)
+
+@app.route('/')
+def home():
+    return "🛰️ Satellite Tracker API is running smoothly!"
+
+@app.route('/view')
+def view_tracker():
+    """index.html dosyasını doğrudan sunucu üzerinden yayınlar"""
+    try:
+        return send_file('index.html')
+    except Exception as e:
+        return f"Hata: index.html dosyası bulunamadı. Detay: {e}", 404
+
+@app.route('/api/data')
+def api_data():
+    """Web sitemizin çağıracağı ana köprü. SADECE İSTENEN KİŞİNİN (chat_id) uydularını JSON olarak döndürür."""
+    chat_id = request.args.get('chat_id', type=int)
+    
+    # Kullanıcı yoksa veya ID gönderilmediyse hata dön
+    if not chat_id or chat_id not in user_data:
+        return jsonify({'error': 'User not found or no satellites tracked.'}), 404
+        
+    data = user_data[chat_id]
+    main_gs = data.get('global_gs', {'lat': 39.89110, 'lon': 32.77870, 'alt': 925, 'name': 'TUBITAK UZAY ANKARA'})
+    
+    satellites = []
+    
+    # Sadece o kullanıcının hafızasındaki uyduları topla
+    for sat_id, sat_info in data['satellites'].items():
+        satellites.append({
+            'id': sat_id,
+            'name': sat_info['tle'][2],
+            'line1': sat_info['tle'][0],
+            'line2': sat_info['tle'][1]
+        })
+    
+    return jsonify({
+        'ground_station': main_gs,
+        'satellites': satellites
+    })
+
+def run_api():
+    """Render.com'un atayacağı portu (veya yerelde 8080'i) dinler"""
+    port = int(os.environ.get('PORT', 8080))
+    # use_reloader=False çok önemli, aksi takdirde Telegram botuyla çakışır
+    app.run(host='0.0.0.0', port=port, use_reloader=False)
+
+# ==========================================
 # --- YARDIMCI FONKSİYONLAR ---
+# ==========================================
 
 def get_tle_enhanced(norad_id):
-    """
-    3 Kademeli ve Raporlamalı TLE Çekme Sistemi.
-    Sırasıyla: CelesTrak -> Ivan API -> Space-Track
-    """
+    """3 Kademeli ve Raporlamalı TLE Çekme Sistemi."""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -38,7 +92,6 @@ def get_tle_enhanced(norad_id):
         'Connection': 'keep-alive',
     }
     
-    # --- PLAN A: CelesTrak ---
     try:
         url = f'https://celestrak.org/NORAD/elements/gp.php?CATNR={norad_id}&FORMAT=tle'
         resp = requests.get(url, headers=headers, timeout=8)
@@ -46,10 +99,8 @@ def get_tle_enhanced(norad_id):
             lines = resp.text.strip().split('\n')
             if len(lines) >= 3:
                 return lines[1].strip(), lines[2].strip(), lines[0].strip(), "CelesTrak"
-    except Exception: 
-        pass
+    except Exception: pass
 
-    # --- PLAN B: Ivan Stanojevic API ---
     try:
         alt_url = f'https://tle.ivanstanojevic.me/api/tle/{norad_id}'
         resp = requests.get(alt_url, headers=headers, timeout=8)
@@ -57,10 +108,8 @@ def get_tle_enhanced(norad_id):
             data = resp.json()
             if 'line1' in data and 'line2' in data:
                 return data['line1'], data['line2'], data.get('name', f"SAT-{norad_id}"), "Ivan API"
-    except Exception: 
-        pass
+    except Exception: pass
 
-    # --- PLAN C: Space-Track (Giriş Yaparak Çeker) ---
     st_user = os.environ.get("SPACE_TRACK_USER")
     st_pass = os.environ.get("SPACE_TRACK_PASSWORD")
     
@@ -86,7 +135,6 @@ def get_tle_enhanced(norad_id):
     return None, None, None, None
 
 def calculate_passes(chat_id, sat_id, days=2):
-    """Varsayılan olarak 48 saatlik (2 gün) hesaplama yapar, böylece bir sonraki günü görebiliriz."""
     data = user_data.get(chat_id)
     if not data or sat_id not in data['satellites']:
         return []
@@ -129,7 +177,6 @@ def calculate_passes(chat_id, sat_id, days=2):
     return passes
 
 async def send_pass_schedule(chat_id, sat_id, context: ContextTypes.DEFAULT_TYPE):
-    """Mesaj kalabalığı olmaması için LİSTEYİ sadece 24 saatlik hesaplar."""
     data = user_data.get(chat_id)
     if not data or sat_id not in data['satellites']:
         return
@@ -173,7 +220,6 @@ async def send_pass_schedule(chat_id, sat_id, context: ContextTypes.DEFAULT_TYPE
         await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
 
 async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TYPE):
-    """Alarmları ve SONRAKİ GEÇİŞ tahminini yapabilmek için 48 saatlik hesaplar."""
     data = user_data.get(chat_id)
     if not data or sat_id not in data['satellites']:
         return
@@ -197,7 +243,6 @@ async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TY
     remind_mins = sat_info.get('custom_remind') if sat_info.get('custom_remind') is not None else data['remind_time']
     now = datetime.now(TURKEY_TZ)
     
-    # Gelecek ilk gece yarısı (00:00) zamanını bul
     next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
     for i, p in enumerate(passes):
@@ -267,7 +312,6 @@ async def schedule_pass_alerts(chat_id, sat_id, context: ContextTypes.DEFAULT_TY
                     f"• Duration: <b>{int(n_m)}m {int(n_s)}s</b>"
                 )
                 
-                # Gece 00:00 (TLE Update) sonrasına denk geliyorsa uyarı ekle
                 if n_aos >= next_midnight:
                     msg += f"\n\n<i>⚠️ Note: Estimated timings. This pass occurs after tonight's 00:00 TLE update and may slightly shift.</i>"
             else:
@@ -282,7 +326,6 @@ async def send_telegram_msg(chat_id, text, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Mesaj gonderilemedi {chat_id}: {e}")
 
 async def auto_daily_tle_update(context: ContextTypes.DEFAULT_TYPE):
-    """Her gün çalışan, hatalara karşı dirençli bakım servisi"""
     for chat_id, data in user_data.items():
         if not data.get('satellites'):
             continue 
@@ -295,14 +338,12 @@ async def auto_daily_tle_update(context: ContextTypes.DEFAULT_TYPE):
             line1, line2, name, source = get_tle_enhanced(sat_id)
             
             if line1:
-                # Tazelik bilgisini (Epoch) çıkaralım
                 sat_obj = EarthSatellite(line1, line2, name, ts)
                 epoch_dt = sat_obj.epoch.utc_datetime().replace(tzinfo=pytz.utc).astimezone(TURKEY_TZ)
                 epoch_str = epoch_dt.strftime('%d %b %H:%M')
-
+                
                 user_data[chat_id]['satellites'][sat_id]['tle'] = (line1, line2, name)
                 
-                # Rapor satırı oluştur
                 status_line = f"✅ {name}: Fetched from <b>{source}</b>\n   └ <i>Data Epoch: {epoch_str}</i>"
                 updated_sats.append(status_line)
             else:
@@ -351,6 +392,7 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔸 <b>/constellation</b> : Add the Turkish fleet (GÖKTÜRK-2, İMECE, GÖKTÜRK-1A) to your tracking list.\n"
         "<i>Example: /constellation OR /constellation default</i>\n\n"
         "🔸 <b>/listsatellites</b> : View all currently tracked satellites.\n\n"
+        "🔸 <b>/viewsat</b> : 🌍 Get your private 3D Live Tracker link!\n\n"
         "🔸 <b>/groundstation &lt;lat&gt; &lt;lon&gt; &lt;alt&gt;</b> : Set global ground station.\n"
         "<i>Example: /groundstation 39.89 32.77 925</i>\n\n"
         "🔸 <b>/groundstation &lt;NORAD_ID&gt; &lt;lat&gt; &lt;lon&gt; &lt;alt&gt;</b> : Set a custom ground station for a specific satellite.\n"
@@ -365,6 +407,24 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔸 <b>/stop &lt;NORAD_ID&gt;</b> (or /removesatellite &lt;NORAD_ID&gt;) : Stop tracking a specific satellite.\n"
     )
     await update.message.reply_text(info_text, parse_mode='HTML')
+
+async def cmd_viewsat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kullanıcıya özel 3D Tracker linki üretir"""
+    chat_id = update.effective_chat.id
+    active_chats.add(chat_id)
+    init_user(chat_id)
+    
+    # Render'a yüklediğinde buradaki localhost'u kendi render linkin ile değiştirmelisin
+    base_url = os.environ.get("WEB_URL", "http://127.0.0.1:8080")
+    link = f"{base_url}/view?chat_id={chat_id}"
+    
+    await update.message.reply_text(
+        f"🌍 <b>Your Personal 3D Tracker Ready!</b>\n\n"
+        f"Click the link below to view your fleet live:\n"
+        f"👉 {link}\n\n"
+        f"<i>Note: Do not share this link if you want to keep your fleet tracking private.</i>",
+        parse_mode='HTML'
+    )
 
 async def set_groundstation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -574,7 +634,6 @@ async def set_minelevation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_pass_schedule(chat_id, sat_id, context)
 
 async def update_tle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manuel TLE güncelleme komutu, hatalara dirençli hale getirildi"""
     chat_id = update.effective_chat.id
     active_chats.add(chat_id)
     init_user(chat_id)
@@ -634,6 +693,7 @@ def main():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("info", cmd_info))
+    application.add_handler(CommandHandler("viewsat", cmd_viewsat)) # <--- YENİ KOMUT EKLENDİ
     application.add_handler(CommandHandler("groundstation", set_groundstation))
     application.add_handler(CommandHandler("satellite", set_satellite))
     application.add_handler(CommandHandler("constellation", cmd_constellation))
@@ -645,11 +705,16 @@ def main():
     application.add_handler(CommandHandler("tleupdate", update_tle))
 
     job_queue = application.job_queue
-    
-    # Zamanı Türkiye saatiyle tam 00:00 (gece yarısı) olarak ayarladık
     midnight_trt = datetime.strptime('00:00:00', '%H:%M:%S').time().replace(tzinfo=TURKEY_TZ)
     job_queue.run_daily(auto_daily_tle_update, time=midnight_trt)
 
+    # ==============================================================
+    # --- BOT BAŞLAMADAN ÖNCE WEB SUNUCUSUNU (API) BAŞLAT ---
+    # ==============================================================
+    api_thread = threading.Thread(target=run_api, daemon=True)
+    api_thread.start()
+
+    # Botu çalıştır
     application.run_polling()
 
 if __name__ == '__main__':
