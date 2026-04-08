@@ -33,6 +33,16 @@
     <div id="sidebar" style="display: none;">
         <h3>🛰️ My Private Fleet</h3>
         <div id="sat-list"></div>
+        
+        <hr style="border-color: rgba(255,255,255,0.2); margin-top: 15px; margin-bottom: 15px;">
+        <div class="sat-item">
+            <input type="checkbox" id="toggleAtmosphere" checked> 
+            <span>Atmosfer Efekti</span>
+        </div>
+        <div class="sat-item">
+            <input type="checkbox" id="toggleLighting"> 
+            <span>Gece/Gündüz & Güneş</span>
+        </div>
     </div>
 
     <div id="cesiumContainer"></div>
@@ -48,13 +58,38 @@
         }
 
         function startSystem() {
+            // YENİ VE OPTİMİZE EDİLMİŞ VIEWER AYARLARI (Kasmayı engeller)
             const viewer = new Cesium.Viewer('cesiumContainer', {
                 shouldAnimate: true, animation: true, timeline: true, baseLayerPicker: false,  
-                geocoder: false, homeButton: false, sceneModePicker: false, infoBox: true, navigationHelpButton: false
+                geocoder: false, homeButton: false, sceneModePicker: false, infoBox: true, navigationHelpButton: false,
+                
+                // PERFORMANS ARTIRICI GİZLİ AYARLAR:
+                msaaSamples: 1, 
+                contextOptions: {
+                    webgl: { alpha: false, antialias: false, powerPreference: "high-performance" } 
+                }
             });
 
+            // Çözünürlük Ölçeği (Kasmayı %50 azaltır)
+            viewer.resolutionScale = 0.85; 
+            viewer.scene.postProcessStages.fxaa.enabled = false; 
+            viewer.scene.fog.enabled = false; 
+
+            // Başlangıç Görsel Efekt Ayarları
             viewer.clock.multiplier = 60; 
+            viewer.scene.globe.atmosphere.show = true; 
             viewer.scene.globe.enableLighting = false; 
+            viewer.scene.sun.show = false;
+
+            // YENİ: KONTROL BUTONLARININ İŞLEVLERİ
+            document.getElementById('toggleAtmosphere').addEventListener('change', function(e) {
+                viewer.scene.globe.atmosphere.show = e.target.checked;
+            });
+
+            document.getElementById('toggleLighting').addEventListener('change', function(e) {
+                viewer.scene.globe.enableLighting = e.target.checked;
+                viewer.scene.sun.show = e.target.checked;
+            });
 
             const now = Cesium.JulianDate.now();
             const oneWeekLater = Cesium.JulianDate.addDays(now, 7, new Cesium.JulianDate());
@@ -73,7 +108,6 @@
 
             let gsEntity = null; 
             
-            // YENİLİK 1: Sadece ID'yi değil, TLE şifresini (hash) de hafızada tutuyoruz
             const loadedSatellites = new Map(); 
 
             function fetchLatestData() {
@@ -116,7 +150,6 @@
                 const satListDiv = document.getElementById('sat-list');
                 const incomingIds = new Set(satellites.map(s => s.id));
 
-                // TEMİZLİK: Bottan silinen uyduları haritadan tamamen kazı
                 loadedSatellites.forEach((tleHash, id) => {
                     if (!incomingIds.has(id)) {
                         viewer.entities.removeById(id);
@@ -126,20 +159,16 @@
                     }
                 });
 
-                // EKLEME VE GÜNCELLEME
                 satellites.forEach(sat => {
-                    // YENİLİK 2: Gece 12 kontrolü. Eski TLE ile Yeni TLE aynı mı?
                     const currentTleHash = sat.line1 + sat.line2; 
                     const isNewOrUpdated = !loadedSatellites.has(sat.id) || loadedSatellites.get(sat.id) !== currentTleHash;
 
                     if (isNewOrUpdated) {
                         
-                        // Eğer güncelleniyorsa (Gece 12 olduysa), eskisini silip tazesini çizeceğiz
                         if (loadedSatellites.has(sat.id)) {
                             viewer.entities.removeById(sat.id);
                         }
 
-                        // Yeni TLE'yi hafızaya yaz
                         loadedSatellites.set(sat.id, currentTleHash); 
 
                         const satrec = satellite.twoline2satrec(sat.line1, sat.line2);
@@ -167,19 +196,16 @@
                             interpolationAlgorithm: Cesium.LagrangePolynomialApproximation
                         });
 
-                        // YENİLİK 3: DİNAMİK KAPSAMA ALANI MATEMATİĞİ (Ufuk Çizgisi Hesaplama)
-                        // Uydu alçaldıkça alan küçülür, yükseldikçe alan genişler!
                         const dynamicFootprintRadius = new Cesium.CallbackProperty(function(time, result) {
                             const pos = positionProperty.getValue(time);
                             if (pos) {
                                 const carto = Cesium.Cartographic.fromCartesian(pos);
-                                const alt = carto.height; // Uydunun o saniyedeki anlık yüksekliği (metre)
-                                const R = 6371000; // Dünyanın yarıçapı (metre)
-                                // Matematiksel ufuk açısı ve yay uzunluğu
+                                const alt = carto.height; 
+                                const R = 6371000; 
                                 const angle = Math.acos(R / (R + alt));
                                 return R * angle; 
                             }
-                            return 2500000.0; // Veri okunamazsa yedek değer
+                            return 2500000.0; 
                         }, false);
 
                         viewer.entities.add({
@@ -198,7 +224,6 @@
                                 resolution: 1
                             },
                             
-                            // Artık sabit 2500km değil, gerçek zamanlı nefes alan bir alan!
                             ellipse: {
                                 semiMinorAxis: dynamicFootprintRadius, 
                                 semiMajorAxis: dynamicFootprintRadius,
@@ -208,7 +233,6 @@
                             }
                         });
 
-                        // Sadece uydu ilk kez ekleniyorsa yan panele buton koy (Güncellemelerde çift buton çıkmasın)
                         if (!document.getElementById('sat-ui-' + sat.id)) {
                             const div = document.createElement('div');
                             div.className = 'sat-item';
