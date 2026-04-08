@@ -55,6 +55,7 @@
             document.getElementById('loading').innerHTML = "❌ Yetkisiz Giriş!<br><br>Lütfen Telegram botunuza gidip <b>/viewsat</b> komutunu yazın ve size özel üretilen linke tıklayın.";
         } else {
             startSystem();
+            viewer.scene.globe.maximumScreenSpaceError = 8;
         }
 
         function startSystem() {
@@ -71,7 +72,7 @@
             });
 
             // Çözünürlük Ölçeği (Kasmayı %50 azaltır)
-            viewer.resolutionScale = 0.85; 
+            viewer.resolutionScale = 0.80; 
             viewer.scene.postProcessStages.fxaa.enabled = false; 
             viewer.scene.fog.enabled = false; 
 
