@@ -58,7 +58,7 @@
         }
 
         function startSystem() {
-            // YENİ VE OPTİMİZE EDİLMİŞ VIEWER AYARLARI (Kasmayı engeller)
+            // OPTİMİZE EDİLMİŞ VIEWER AYARLARI (Kasmayı engeller)
             const viewer = new Cesium.Viewer('cesiumContainer', {
                 shouldAnimate: true, animation: true, timeline: true, baseLayerPicker: false,  
                 geocoder: false, homeButton: false, sceneModePicker: false, infoBox: true, navigationHelpButton: false,
@@ -75,15 +75,17 @@
             viewer.scene.postProcessStages.fxaa.enabled = false; 
             viewer.scene.fog.enabled = false; 
 
-            // Başlangıç Görsel Efekt Ayarları
+            // Başlangıç Görsel Efekt Ayarları (HATA DÜZELTİLDİ)
             viewer.clock.multiplier = 60; 
-            viewer.scene.globe.atmosphere.show = true; 
+            viewer.scene.skyAtmosphere.show = true; 
+            viewer.scene.globe.showGroundAtmosphere = true; 
             viewer.scene.globe.enableLighting = false; 
             viewer.scene.sun.show = false;
 
-            // YENİ: KONTROL BUTONLARININ İŞLEVLERİ
+            // KONTROL BUTONLARININ İŞLEVLERİ (HATA DÜZELTİLDİ)
             document.getElementById('toggleAtmosphere').addEventListener('change', function(e) {
-                viewer.scene.globe.atmosphere.show = e.target.checked;
+                viewer.scene.skyAtmosphere.show = e.target.checked;
+                viewer.scene.globe.showGroundAtmosphere = e.target.checked;
             });
 
             document.getElementById('toggleLighting').addEventListener('change', function(e) {
