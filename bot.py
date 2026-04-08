@@ -679,15 +679,23 @@ def main():
     application = Application.builder().token(token).build()
 
     async def shutdown_notice(app: Application):
-        for chat_id in active_chats:
-            try:
-                await app.bot.send_message(
-                    chat_id=chat_id, 
-                    text="🔄 <b>System Update in Progress</b>\nI am restarting for a version update. My memory will be cleared. Please wait 1 minute and re-establish your fleet.",
-                    parse_mode='HTML'
-                )
-            except Exception as e:
-                logger.error(f"Kapanış mesajı gönderilemedi: {e}")
+            # Sadece active_chats değil, sistemde uydusu kayıtlı olan HERKESİ bul
+            users_to_notify = list(user_data.keys()) 
+            
+            if not users_to_notify:
+                logger.info("Sistemde aktif kullanıcı yok, sessizce kapanıyor.")
+                return
+
+            for chat_id in users_to_notify:
+                try:
+                    await app.bot.send_message(
+                        chat_id=chat_id, 
+                        text="🔄 <b>System Update in Progress</b>\nI am restarting for a version update. My memory will be cleared. Please wait 1 minute and re-establish your fleet.",
+                        parse_mode='HTML'
+                    )
+                    logger.info(f"Kapanış alarmı başarıyla fırlatıldı: {chat_id}")
+                except Exception as e:
+                    logger.error(f"Kapanış mesajı gönderilemedi {chat_id}: {e}")
 
     application.post_stop = shutdown_notice
 
