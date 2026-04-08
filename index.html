@@ -55,35 +55,38 @@
             document.getElementById('loading').innerHTML = "❌ Yetkisiz Giriş!<br><br>Lütfen Telegram botunuza gidip <b>/viewsat</b> komutunu yazın ve size özel üretilen linke tıklayın.";
         } else {
             startSystem();
-            viewer.scene.globe.maximumScreenSpaceError = 8;
         }
 
         function startSystem() {
-            // OPTİMİZE EDİLMİŞ VIEWER AYARLARI (Kasmayı engeller)
+            // YÜKSEK KALİTE VIEWER AYARLARI (Gereksiz tekrarlar silindi)
             const viewer = new Cesium.Viewer('cesiumContainer', {
-                shouldAnimate: true, animation: true, timeline: true, baseLayerPicker: false,  
-                geocoder: false, homeButton: false, sceneModePicker: false, infoBox: true, navigationHelpButton: false,
-                
-                // PERFORMANS ARTIRICI GİZLİ AYARLAR:
-                msaaSamples: 1, 
-                contextOptions: {
-                    webgl: { alpha: false, antialias: false, powerPreference: "high-performance" } 
-                }
+                shouldAnimate: true, animation: true, timeline: true, 
+                baseLayerPicker: false, geocoder: false, homeButton: false, 
+                sceneModePicker: false, infoBox: true, navigationHelpButton: false
             });
 
-            // Çözünürlük Ölçeği (Kasmayı %50 azaltır)
+            // KAPLAMA OPTİMİZASYONU: HD kaplamaları rahatlatır, FPS'i artırır.
+            viewer.scene.globe.maximumScreenSpaceError = 8; 
+
+            // Çözünürlük Ölçeği: (1.0 = Cam gibi keskin, 0.80 = Biraz bulanık ama hızlı)
             viewer.resolutionScale = 0.80; 
-            viewer.scene.postProcessStages.fxaa.enabled = false; 
+            
+            // Kenar yumuşatmayı (Anti-Aliasing) Geri Açıyoruz! Yazılar düzelecek.
+            viewer.scene.postProcessStages.fxaa.enabled = true; 
             viewer.scene.fog.enabled = false; 
 
-            // Başlangıç Görsel Efekt Ayarları (HATA DÜZELTİLDİ)
+            // GÖLGE VE DERİNLİK İPTALİ (Performans için)
+            viewer.scene.shadowMap.enabled = false;
+            viewer.scene.globe.depthTestAgainstTerrain = false;
+
+            // Başlangıç Görsel Efekt Ayarları
             viewer.clock.multiplier = 60; 
             viewer.scene.skyAtmosphere.show = true; 
             viewer.scene.globe.showGroundAtmosphere = true; 
             viewer.scene.globe.enableLighting = false; 
             viewer.scene.sun.show = false;
 
-            // KONTROL BUTONLARININ İŞLEVLERİ (HATA DÜZELTİLDİ)
+            // KONTROL BUTONLARININ İŞLEVLERİ
             document.getElementById('toggleAtmosphere').addEventListener('change', function(e) {
                 viewer.scene.skyAtmosphere.show = e.target.checked;
                 viewer.scene.globe.showGroundAtmosphere = e.target.checked;
@@ -181,7 +184,8 @@
                         const positionProperty = new Cesium.SampledPositionProperty();
                         
                         const totalSecondsInWeek = 7 * 24 * 60 * 60;
-                        for (let i = -periodInSeconds; i <= totalSecondsInWeek; i += 60) {
+                        // YÖRÜNGE OPTİMİZASYONU: İşlemciyi %60 rahatlatır (60 yerine 180 saniye adım)
+                        for (let i = -periodInSeconds; i <= totalSecondsInWeek; i += 180) {
                             const time = Cesium.JulianDate.addSeconds(now, i, new Cesium.JulianDate());
                             const jsDate = Cesium.JulianDate.toDate(time);
                             const pAndV = satellite.propagate(satrec, jsDate);
