@@ -58,24 +58,27 @@
         }
 
         function startSystem() {
-            // YÜKSEK KALİTE VIEWER AYARLARI (Gereksiz tekrarlar silindi)
+            // YÜKSEK KALİTE VIEWER AYARLARI
             const viewer = new Cesium.Viewer('cesiumContainer', {
                 shouldAnimate: true, animation: true, timeline: true, 
                 baseLayerPicker: false, geocoder: false, homeButton: false, 
                 sceneModePicker: false, infoBox: true, navigationHelpButton: false
             });
 
-            // KAPLAMA OPTİMİZASYONU: HD kaplamaları rahatlatır, FPS'i artırır.
-            viewer.scene.globe.maximumScreenSpaceError = 8; 
+            // ZOOM LİMİTİ: Yeryüzüne 250 km'den fazla yaklaşılamaz (Gereksiz render'ı önler)
+            viewer.scene.screenSpaceCameraController.minimumZoomDistance = 250000; 
 
-            // Çözünürlük Ölçeği: (1.0 = Cam gibi keskin, 0.80 = Biraz bulanık ama hızlı)
-            viewer.resolutionScale = 0.80; 
+            // GÖRÜNTÜ KALİTESİ: Dünyanın pikselli görünmesini engeller (varsayılan değer)
+            viewer.scene.globe.maximumScreenSpaceError = 2; 
+
+            // ÇÖZÜNÜRLÜK: 1.0 yaparak yazıları ve çizgileri cam gibi keskin yapıyoruz!
+            viewer.resolutionScale = 1.0; 
             
-            // Kenar yumuşatmayı (Anti-Aliasing) Geri Açıyoruz! Yazılar düzelecek.
+            // Kenar yumuşatmayı (Anti-Aliasing) açık tutuyoruz.
             viewer.scene.postProcessStages.fxaa.enabled = true; 
             viewer.scene.fog.enabled = false;
 
-            // GÖLGE VE DERİNLİK İPTALİ (Performans için)
+            // GÖLGE VE DERİNLİK İPTALİ (Performans için gereksizleri kapattık)
             viewer.scene.shadowMap.enabled = false;
             viewer.scene.globe.depthTestAgainstTerrain = false;
 
