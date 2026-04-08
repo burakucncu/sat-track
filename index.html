@@ -84,10 +84,10 @@
 
             // Başlangıç Görsel Efekt Ayarları
             viewer.clock.multiplier = 60; 
-            viewer.scene.skyAtmosphere.show = true; 
-            viewer.scene.globe.showGroundAtmosphere = true; 
-            viewer.scene.globe.enableLighting = false; 
-            viewer.scene.sun.show = false;
+            viewer.scene.skyAtmosphere.show = false; 
+            viewer.scene.globe.showGroundAtmosphere = false; 
+            viewer.scene.globe.enableLighting = true; 
+            viewer.scene.sun.show = true;
 
             // KONTROL BUTONLARININ İŞLEVLERİ
             document.getElementById('toggleAtmosphere').addEventListener('change', function(e) {
