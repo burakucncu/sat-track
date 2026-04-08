@@ -7,7 +7,6 @@
     
     <script src="https://cesium.com/downloads/cesiumjs/releases/1.115/Build/Cesium/Cesium.js"></script>
     <link href="https://cesium.com/downloads/cesiumjs/releases/1.115/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
-    
     <script src="https://cdnjs.cloudflare.com/ajax/libs/satellite.js/5.0.0/satellite.min.js"></script>
 
     <style>
@@ -15,20 +14,11 @@
         #cesiumContainer { width: 100%; height: 100%; }
         #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-size: 20px; z-index: 10; font-family: monospace; text-shadow: 2px 2px 4px #000; text-align: center; background: rgba(0,0,0,0.7); padding: 20px; border-radius: 10px;}
         
-        /* SAĞ YAN PANEL (SIDEBAR) */
         #sidebar {
-            position: absolute;
-            top: 20px;
-            right: 20px;
-            width: 250px;
-            background: rgba(15, 20, 25, 0.85); 
-            backdrop-filter: blur(8px);
-            color: #fff;
-            padding: 15px;
-            border-radius: 12px;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-            z-index: 10;
+            position: absolute; top: 20px; right: 20px; width: 250px;
+            background: rgba(15, 20, 25, 0.85); backdrop-filter: blur(8px);
+            color: #fff; padding: 15px; border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.2); box-shadow: 0 4px 15px rgba(0,0,0,0.5); z-index: 10;
         }
         #sidebar h3 { margin-top: 0; font-size: 16px; border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 8px;}
         .sat-item { margin-bottom: 10px; display: flex; align-items: center; font-size: 14px; cursor: pointer; }
@@ -48,33 +38,24 @@
     <div id="cesiumContainer"></div>
 
     <script>
-        // --- GÜVENLİK VE KİŞİSELLEŞTİRME KONTROLÜ ---
-        // URL'den kullanıcının Telegram Kimliğini (chat_id) al
         const urlParams = new URLSearchParams(window.location.search);
         const chatId = urlParams.get('chat_id');
 
         if (!chatId) {
-            // Eğer URL'de şifre (chat_id) yoksa haritayı hiç açma, uyarı ver.
             document.getElementById('loading').innerHTML = "❌ Yetkisiz Giriş!<br><br>Lütfen Telegram botunuza gidip <b>/viewsat</b> komutunu yazın ve size özel üretilen linke tıklayın.";
         } else {
-            // Eğer kimlik doğruysa sistemi başlat
             startSystem();
         }
 
         function startSystem() {
-            // 1. Cesium Dünyasını Başlat
             const viewer = new Cesium.Viewer('cesiumContainer', {
-                shouldAnimate: true,     
-                animation: true,         
-                timeline: true,          
-                baseLayerPicker: false,  
+                shouldAnimate: true, animation: true, timeline: true, baseLayerPicker: false,  
                 geocoder: false, homeButton: false, sceneModePicker: false, infoBox: true, navigationHelpButton: false
             });
 
             viewer.clock.multiplier = 60; 
             viewer.scene.globe.enableLighting = false; 
 
-            // 1 Hafta Zaman Ayarı
             const now = Cesium.JulianDate.now();
             const oneWeekLater = Cesium.JulianDate.addDays(now, 7, new Cesium.JulianDate());
             viewer.clock.startTime = now.clone();
@@ -83,7 +64,6 @@
             viewer.clock.clockRange = Cesium.ClockRange.LOOP_STOP; 
             viewer.timeline.zoomTo(now, oneWeekLater); 
 
-            // Harita Yükleme
             viewer.imageryLayers.removeAll(); 
             Cesium.ArcGisMapServerImageryProvider.fromUrl(
                 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
@@ -91,13 +71,12 @@
                 viewer.imageryLayers.addImageryProvider(provider);
             }).catch(function(error) { console.error("Harita yüklenemedi:", error); });
 
-            // --- HAFIZA VE CANLI SENKRONİZASYON ---
             let gsEntity = null; 
-            const loadedSatellites = new Set(); 
+            
+            // YENİLİK 1: Sadece ID'yi değil, TLE şifresini (hash) de hafızada tutuyoruz
+            const loadedSatellites = new Map(); 
 
-            // 2. Ana Veri Çekme Fonksiyonu (SADECE KİŞİYE ÖZEL)
             function fetchLatestData() {
-                // SİHİRLİ DOKUNUŞ: Artık veriyi chat_id parametresiyle çekiyoruz
                 fetch('/api/data?chat_id=' + chatId)
                     .then(response => {
                         if (!response.ok) throw new Error("Kayıt bulunamadı");
@@ -111,7 +90,6 @@
                         updateSatellites(data.satellites);
                     })
                     .catch(error => {
-                        // Eğer kullanıcının hiç uydusu yoksa veya botta silinmişse
                         document.getElementById('loading').style.display = 'block';
                         document.getElementById('loading').innerHTML = "Henüz takip ettiğiniz bir uydu yok.<br>Botunuzdan <b>/constellation</b> veya <b>/satellite</b> komutu ile uydu ekleyin.";
                         document.getElementById('sidebar').style.display = 'none';
@@ -136,26 +114,33 @@
 
             function updateSatellites(satellites) {
                 const satListDiv = document.getElementById('sat-list');
-                
                 const incomingIds = new Set(satellites.map(s => s.id));
 
-                // --- TEMİZLİK KISMI ---
-                loadedSatellites.forEach(id => {
+                // TEMİZLİK: Bottan silinen uyduları haritadan tamamen kazı
+                loadedSatellites.forEach((tleHash, id) => {
                     if (!incomingIds.has(id)) {
-                        // 1. Haritadan sil
                         viewer.entities.removeById(id);
-                        // 2. Sağ panelden sil
                         const uiItem = document.getElementById('sat-ui-' + id);
                         if (uiItem) uiItem.remove();
-                        // 3. Hafızadan sil
                         loadedSatellites.delete(id);
                     }
                 });
 
-                // --- YENİLERİ EKLEME KISMI ---
+                // EKLEME VE GÜNCELLEME
                 satellites.forEach(sat => {
-                    if (!loadedSatellites.has(sat.id)) {
-                        loadedSatellites.add(sat.id); 
+                    // YENİLİK 2: Gece 12 kontrolü. Eski TLE ile Yeni TLE aynı mı?
+                    const currentTleHash = sat.line1 + sat.line2; 
+                    const isNewOrUpdated = !loadedSatellites.has(sat.id) || loadedSatellites.get(sat.id) !== currentTleHash;
+
+                    if (isNewOrUpdated) {
+                        
+                        // Eğer güncelleniyorsa (Gece 12 olduysa), eskisini silip tazesini çizeceğiz
+                        if (loadedSatellites.has(sat.id)) {
+                            viewer.entities.removeById(sat.id);
+                        }
+
+                        // Yeni TLE'yi hafızaya yaz
+                        loadedSatellites.set(sat.id, currentTleHash); 
 
                         const satrec = satellite.twoline2satrec(sat.line1, sat.line2);
                         const radiansPerMin = satrec.no; 
@@ -182,6 +167,21 @@
                             interpolationAlgorithm: Cesium.LagrangePolynomialApproximation
                         });
 
+                        // YENİLİK 3: DİNAMİK KAPSAMA ALANI MATEMATİĞİ (Ufuk Çizgisi Hesaplama)
+                        // Uydu alçaldıkça alan küçülür, yükseldikçe alan genişler!
+                        const dynamicFootprintRadius = new Cesium.CallbackProperty(function(time, result) {
+                            const pos = positionProperty.getValue(time);
+                            if (pos) {
+                                const carto = Cesium.Cartographic.fromCartesian(pos);
+                                const alt = carto.height; // Uydunun o saniyedeki anlık yüksekliği (metre)
+                                const R = 6371000; // Dünyanın yarıçapı (metre)
+                                // Matematiksel ufuk açısı ve yay uzunluğu
+                                const angle = Math.acos(R / (R + alt));
+                                return R * angle; 
+                            }
+                            return 2500000.0; // Veri okunamazsa yedek değer
+                        }, false);
+
                         viewer.entities.add({
                             id: sat.id,
                             name: sat.name,
@@ -198,37 +198,40 @@
                                 resolution: 1
                             },
                             
+                            // Artık sabit 2500km değil, gerçek zamanlı nefes alan bir alan!
                             ellipse: {
-                                semiMinorAxis: 2500000.0, 
-                                semiMajorAxis: 2500000.0,
+                                semiMinorAxis: dynamicFootprintRadius, 
+                                semiMajorAxis: dynamicFootprintRadius,
                                 material: Cesium.Color.CYAN.withAlpha(0.15), 
                                 outline: true,
                                 outlineColor: Cesium.Color.CYAN
                             }
                         });
 
-                        // YAN PANELE BUTON EKLE (Silinebilmesi için ID atadık)
-                        const div = document.createElement('div');
-                        div.className = 'sat-item';
-                        div.id = 'sat-ui-' + sat.id; 
-                        
-                        const checkbox = document.createElement('input');
-                        checkbox.type = 'checkbox';
-                        checkbox.checked = true; 
-                        
-                        checkbox.onchange = (e) => {
-                            const entity = viewer.entities.getById(sat.id);
-                            if (entity) {
-                                entity.show = e.target.checked;
-                            }
-                        };
+                        // Sadece uydu ilk kez ekleniyorsa yan panele buton koy (Güncellemelerde çift buton çıkmasın)
+                        if (!document.getElementById('sat-ui-' + sat.id)) {
+                            const div = document.createElement('div');
+                            div.className = 'sat-item';
+                            div.id = 'sat-ui-' + sat.id; 
+                            
+                            const checkbox = document.createElement('input');
+                            checkbox.type = 'checkbox';
+                            checkbox.checked = true; 
+                            
+                            checkbox.onchange = (e) => {
+                                const entity = viewer.entities.getById(sat.id);
+                                if (entity) {
+                                    entity.show = e.target.checked;
+                                }
+                            };
 
-                        const label = document.createElement('span');
-                        label.innerText = sat.name;
+                            const label = document.createElement('span');
+                            label.innerText = sat.name;
 
-                        div.appendChild(checkbox);
-                        div.appendChild(label);
-                        satListDiv.appendChild(div);
+                            div.appendChild(checkbox);
+                            div.appendChild(label);
+                            satListDiv.appendChild(div);
+                        }
                     }
                 });
             }
