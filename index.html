@@ -73,7 +73,8 @@
             
             // Kenar yumuşatmayı (Anti-Aliasing) Geri Açıyoruz! Yazılar düzelecek.
             viewer.scene.postProcessStages.fxaa.enabled = true; 
-            viewer.scene.fog.enabled = false; 
+            viewer.scene.fog.enabled = false;
+            viewer.scene.screenSpaceCameraController.minimumZoomDistance = 250000;
 
             // GÖLGE VE DERİNLİK İPTALİ (Performans için)
             viewer.scene.shadowMap.enabled = false;
@@ -107,7 +108,9 @@
 
             viewer.imageryLayers.removeAll(); 
             Cesium.ArcGisMapServerImageryProvider.fromUrl(
-                'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
+                'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer', {
+                    maximumLevel: 7 // GÖRÜNTÜ OPTİMİZASYONU: HD sokak detaylarının inmesini engeller
+                }
             ).then(function(provider) {
                 viewer.imageryLayers.addImageryProvider(provider);
             }).catch(function(error) { console.error("Harita yüklenemedi:", error); });
